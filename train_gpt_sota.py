@@ -44,6 +44,8 @@ class Hyperparameters:
     train_files = os.path.join(data_path, "fineweb_train_*.bin")
     val_files = os.path.join(data_path, "fineweb_val_*.bin")
     tokenizer_path = os.environ.get("TOKENIZER_PATH", "./data/tokenizers/fineweb_1024_bpe.model")
+    # Output dir for logs and saved models. Defaults to cwd; set to volume path on Modal.
+    output_dir = os.environ.get("OUTPUT_DIR", ".")
     run_id = os.environ.get("RUN_ID", str(uuid.uuid4()))
     seed = int(os.environ.get("SEED", 1337))
     val_batch_size = int(os.environ.get("VAL_BATCH_SIZE", 524_288))
@@ -1425,8 +1427,9 @@ def main() -> None:
     enable_math_sdp(False)
     logfile = None
     if master_process:
-        os.makedirs("logs", exist_ok=True)
-        logfile = f"logs/{args.run_id}.txt"
+        logs_dir = os.path.join(args.output_dir, "logs")
+        os.makedirs(logs_dir, exist_ok=True)
+        logfile = os.path.join(logs_dir, f"{args.run_id}.txt")
         print(logfile)
     def log0(msg: str, console: bool = True) -> None:
         if not master_process:
@@ -1794,7 +1797,7 @@ def main() -> None:
     if excluded_mtp > 0:
         log0(f"export_excluding_mtp_params:{excluded_mtp}")
     if master_process:
-        torch.save(export_sd, "final_model.pt")
+        torch.save(export_sd, os.path.join(args.output_dir, "final_model.pt"))
         model_bytes = os.path.getsize("final_model.pt")
         code_bytes = len(code.encode("utf-8"))
         log0(f"Serialized model: {model_bytes} bytes")
@@ -1807,8 +1810,9 @@ def main() -> None:
     torch.save({"w": quant_result, "m": quant_meta}, quant_buf)
     quant_raw = quant_buf.getvalue()
     quant_blob = lzma.compress(quant_raw, preset=6)
+    quant_path = os.path.join(args.output_dir, "final_model.int6.ptz")
     if master_process:
-        with open("final_model.int6.ptz", "wb") as f:
+        with open(quant_path, "wb") as f:
             f.write(quant_blob)
         quant_file_bytes = len(quant_blob)
         code_bytes = len(code.encode("utf-8"))
@@ -1816,7 +1820,7 @@ def main() -> None:
         log0(f"Total submission size int6+lzma: {quant_file_bytes + code_bytes} bytes")
     if distributed:
         dist.barrier()
-    with open("final_model.int6.ptz", "rb") as f:
+    with open(quant_path, "rb") as f:
         quant_blob_disk = f.read()
     quant_state = torch.load(
         io.BytesIO(lzma.decompress(quant_blob_disk)),
